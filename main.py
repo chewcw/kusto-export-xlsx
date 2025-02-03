@@ -17,14 +17,18 @@ KUSTO_TENANT_ID = os.getenv("KUSTO_TENANT_ID") or ""
 
 # Set up the kusto client
 kcsb = KustoConnectionStringBuilder.with_aad_application_key_authentication(
-    KUSTO_CLUSTER,
-    KUSTO_CLIENT_ID,
-    KUSTO_CLIENT_SECRET,
-    KUSTO_TENANT_ID
+    KUSTO_CLUSTER, KUSTO_CLIENT_ID, KUSTO_CLIENT_SECRET, KUSTO_TENANT_ID
 )
 client = KustoClient(kcsb)
 
-def get_query_results(start_datetime: str, end_datetime: str = "", timezone: str = "UTC") -> pd.DataFrame:
+ALLOWED_TAG_NAMES = [
+    "saved-energy"
+]  # Use ["*"] for all tags, or ["Temperature", "Humidity"] for specific tags
+
+
+def get_query_results(
+    start_datetime: str, end_datetime: str = "", timezone: str = "UTC"
+) -> pd.DataFrame:
     """
     Execute the KQL query with the specified start and end datetime.
 
@@ -53,8 +57,10 @@ def get_query_results(start_datetime: str, end_datetime: str = "", timezone: str
     """
     response = client.execute(KUSTO_DATABASE, query)
     df = dataframe_from_result_table(response.primary_results[0])
-    df['dateTimeGenerated'] = pd.to_datetime(df['dateTimeGenerated']).dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-    df['data']= df['data'].apply(lambda x: json.dumps(x))
+    df["dateTimeGenerated"] = pd.to_datetime(df["dateTimeGenerated"]).dt.strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+    df["data"] = df["data"].apply(lambda x: json.dumps(x))
     return df
 
 
@@ -66,6 +72,7 @@ data = get_query_results(start_datetime, end_datetime, "Asia/Kuala_Lumpur")
 # data = pd.read_csv("export (3).csv")
 # print(data)
 
+
 # Function to convert UTC to local time
 def convert_to_local_time(utc_time_str, timezone_str):
     utc_time = datetime.strptime(utc_time_str, "%Y-%m-%dT%H:%M:%S.%f")
@@ -73,36 +80,47 @@ def convert_to_local_time(utc_time_str, timezone_str):
     local_time = utc_time.astimezone(pytz.timezone(timezone_str))
     return local_time
 
+
 # Function to flatten the data
 def flatten_data(row, timezone_str):
     try:
-        utc_date_time = row['dateTimeGenerated'][:-2] + "Z"
+        utc_date_time = row["dateTimeGenerated"][:-2] + "Z"
         local_date_time = convert_to_local_time(utc_date_time.rstrip("Z"), timezone_str)
         local_date = local_date_time.strftime("%Y-%m-%d")
         local_time = local_date_time.strftime("%H:%M:%S.%f")
-        site = row['site']
-        data_array = json.loads(row['data'])
+        site = row["site"]
+        data_array = json.loads(row["data"])
 
         flattened_rows = []
         for item in data_array:
-            flattened_row = {
-                "date": local_date,
-                "time": local_time,
-                "site": site,
-                "modbusAddress": item.get("modbusAddress"),
-                "tagName": item.get("tagName"),
-                "unit": item.get("unit"),
-                "value": item.get("value"),
-            }
-            flattened_rows.append(flattened_row)
+            tag_name = item.get("tagName", "")
+            # Include all tags if ALLOWED_TAG_NAMES contains "*", otherwise filter
+            if "*" in ALLOWED_TAG_NAMES or any(
+                pattern.lower() in tag_name.lower() for pattern in ALLOWED_TAG_NAMES
+            ):
+                flattened_row = {
+                    "date": local_date,
+                    "time": local_time,
+                    "site": site,
+                    "modbusAddress": item.get("modbusAddress"),
+                    "tagName": tag_name,
+                    "unit": item.get("unit"),
+                    "value": item.get("value"),
+                }
+                flattened_rows.append(flattened_row)
         return flattened_rows
     except (json.JSONDecodeError, KeyError) as e:
         print(f"Error processing row: {e}")
         return []
 
+
 # Flatten all rows
 timezone_str = "Asia/Kuala_Lumpur"
-flattened_data = [flattened_row for _, row in data.iterrows() for flattened_row in flatten_data(row, timezone_str)]
+flattened_data = [
+    flattened_row
+    for _, row in data.iterrows()
+    for flattened_row in flatten_data(row, timezone_str)
+]
 
 # Create a new DataFrame with the flattened data
 flattened_df = pd.DataFrame(flattened_data)
@@ -119,4 +137,3 @@ flattened_df.to_excel(f"flattened_data_{start_date}_{end_date}.xlsx", index=Fals
 
 # Display the flattened data
 print(flattened_df)
-
