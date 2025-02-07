@@ -25,10 +25,17 @@ kcsb = KustoConnectionStringBuilder.with_aad_application_key_authentication(
 )
 client = KustoClient(kcsb)
 
-def get_query_results(start_datetime: str, end_datetime: str = "", timezone: str = "UTC") -> pd.DataFrame:
+
+def get_query_results(
+    start_datetime: str, end_datetime: str = "", timezone: str = "UTC"
+) -> pd.DataFrame:
     tz = pytz.timezone(timezone)
     start_dt = datetime.fromisoformat(start_datetime).astimezone(tz)
-    end_dt = datetime.fromisoformat(end_datetime).astimezone(tz) if end_datetime else datetime.now(tz)
+    end_dt = (
+        datetime.fromisoformat(end_datetime).astimezone(tz)
+        if end_datetime
+        else datetime.now(tz)
+    )
 
     all_dfs = []  # Use list instead of repeatedly appending to DataFrame
 
@@ -46,7 +53,9 @@ def get_query_results(start_datetime: str, end_datetime: str = "", timezone: str
             response = client.execute(KUSTO_DATABASE, query)
             df = dataframe_from_result_table(response.primary_results[0])
             if not df.empty:
-                df["dateTimeGenerated"] = pd.to_datetime(df["dateTimeGenerated"]).dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                df["dateTimeGenerated"] = pd.to_datetime(
+                    df["dateTimeGenerated"]
+                ).dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
                 df["data"] = df["data"].apply(json.dumps)
                 all_dfs.append(df)
         except Exception as e:
@@ -56,10 +65,12 @@ def get_query_results(start_datetime: str, end_datetime: str = "", timezone: str
     # Concatenate all DataFrames at once
     return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
+
 def convert_to_local_time(utc_time_str, timezone_str):
     utc_time = datetime.strptime(utc_time_str, "%Y-%m-%dT%H:%M:%S.%fZ")
     utc_time = pytz.utc.localize(utc_time)
     return utc_time.astimezone(pytz.timezone(timezone_str))
+
 
 def flatten_data(row, timezone_str):
     try:
@@ -79,11 +90,17 @@ def flatten_data(row, timezone_str):
                 "unit": item.get("unit"),
                 "value": item.get("value"),
             }
-            for item in data_array if "*" in ALLOWED_TAG_NAMES
+            for item in data_array
+            if "*" in ALLOWED_TAG_NAMES
+            or any(
+                tag.lower() in item.get("tagName", "").lower()
+                for tag in ALLOWED_TAG_NAMES
+            )
         ]
     except (json.JSONDecodeError, KeyError) as e:
         print(f"Error processing row: {e}")
         return []
+
 
 # Set starting and ending dates
 start_datetime = "2025-01-14T00:00:00.000000+0800"
