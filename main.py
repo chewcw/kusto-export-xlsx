@@ -1,151 +1,116 @@
 import pandas as pd
 import json
 import pytz
-from datetime import datetime
+from datetime import datetime, timedelta
 from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
 from azure.kusto.data.helpers import dataframe_from_result_table
 from dotenv import load_dotenv
 import os
 
+# Load environment variables
 load_dotenv()
 
+# Constants
 KUSTO_CLUSTER = os.getenv("KUSTO_CLUSTER") or ""
 KUSTO_DATABASE = os.getenv("KUSTO_DATABASE") or ""
 KUSTO_CLIENT_ID = os.getenv("KUSTO_CLIENT_ID") or ""
 KUSTO_CLIENT_SECRET = os.getenv("KUSTO_CLIENT_SECRET") or ""
 KUSTO_TENANT_ID = os.getenv("KUSTO_TENANT_ID") or ""
+ALLOWED_TAG_NAMES = ["*"]  # For all tags
+TIMEZONE = "Asia/Kuala_Lumpur"
 
-# Set up the kusto client
+# Kusto Client Setup
 kcsb = KustoConnectionStringBuilder.with_aad_application_key_authentication(
     KUSTO_CLUSTER, KUSTO_CLIENT_ID, KUSTO_CLIENT_SECRET, KUSTO_TENANT_ID
 )
 client = KustoClient(kcsb)
 
-ALLOWED_TAG_NAMES = [
-    "saved-energy"
-]  # Use ["*"] for all tags, or ["Temperature", "Humidity"] for specific tags
-
-
-def get_query_results(
-    start_datetime: str, end_datetime: str = "", timezone: str = "UTC"
-) -> pd.DataFrame:
-    """
-    Execute the KQL query with the specified start and end datetime.
-
-    Args:
-        start_datetime (str): The start datetime in ISO 8601 format.
-        end_datetime (str): The end datetime in ISO 8601 format, if this is not
-        provided then use now().
-
-    Returns:
-        pd.DataFrame: Query results as a Pandas DataFrame.
-    """
+def get_query_results(start_datetime: str, end_datetime: str = "", timezone: str = "UTC") -> pd.DataFrame:
     tz = pytz.timezone(timezone)
+    start_dt = datetime.fromisoformat(start_datetime).astimezone(tz)
+    end_dt = datetime.fromisoformat(end_datetime).astimezone(tz) if end_datetime else datetime.now(tz)
 
-    start_datetime = datetime.fromisoformat(start_datetime).astimezone(tz).isoformat()
+    all_dfs = []  # Use list instead of repeatedly appending to DataFrame
 
-    if not end_datetime:
-        end_datetime = datetime.now(tz).isoformat()
-    else:
-        end_datetime = datetime.fromisoformat(end_datetime).astimezone(tz).isoformat()
+    current_start = start_dt
+    while current_start < end_dt:
+        current_end = min(current_start + timedelta(days=1), end_dt)
+        query = f"""
+        ["quill-city-mall-poc"]
+        | where site == "quill-city-mall"
+        | where dateTimeGenerated >= datetime({current_start.isoformat()}) 
+        and dateTimeGenerated <= datetime({current_end.isoformat()})
+        | order by dateTimeGenerated asc
+        """
+        try:
+            response = client.execute(KUSTO_DATABASE, query)
+            df = dataframe_from_result_table(response.primary_results[0])
+            if not df.empty:
+                df["dateTimeGenerated"] = pd.to_datetime(df["dateTimeGenerated"]).dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                df["data"] = df["data"].apply(json.dumps)
+                all_dfs.append(df)
+        except Exception as e:
+            print(f"Error fetching data for {current_start}: {e}")
+        current_start = current_end
 
-    query = f"""
-    ["quill-city-mall-poc"]
-    | where site == "quill-city-mall"
-    | where dateTimeGenerated >= datetime({start_datetime}) and dateTimeGenerated <= datetime({end_datetime})
-    | order by dateTimeGenerated asc
-    """
-    response = client.execute(KUSTO_DATABASE, query)
-    df = dataframe_from_result_table(response.primary_results[0])
-    df["dateTimeGenerated"] = pd.to_datetime(df["dateTimeGenerated"]).dt.strftime(
-        "%Y-%m-%dT%H:%M:%S.%fZ"
-    )
-    df["data"] = df["data"].apply(lambda x: json.dumps(x))
-    return df
+    # Concatenate all DataFrames at once
+    return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
 
-
-# Read the data into a DataFrame
-start_datetime = "2025-02-01T00:00:00.000000+0800"
-end_datetime = "2025-02-08T00:00:00.000000+0800"
-data = get_query_results(start_datetime, end_datetime, "Asia/Kuala_Lumpur")
-# print(data)
-# data = pd.read_csv("export (3).csv")
-# print(data)
-
-
-# Function to convert UTC to local time
 def convert_to_local_time(utc_time_str, timezone_str):
-    utc_time = datetime.strptime(utc_time_str, "%Y-%m-%dT%H:%M:%S.%f")
+    utc_time = datetime.strptime(utc_time_str, "%Y-%m-%dT%H:%M:%S.%fZ")
     utc_time = pytz.utc.localize(utc_time)
-    local_time = utc_time.astimezone(pytz.timezone(timezone_str))
-    return local_time
+    return utc_time.astimezone(pytz.timezone(timezone_str))
 
-
-# Function to flatten the data
 def flatten_data(row, timezone_str):
     try:
-        utc_date_time = row["dateTimeGenerated"][:-2] + "Z"
-        local_date_time = convert_to_local_time(utc_date_time.rstrip("Z"), timezone_str)
+        utc_date_time = row["dateTimeGenerated"]
+        local_date_time = convert_to_local_time(utc_date_time, timezone_str)
         local_date = local_date_time.strftime("%Y-%m-%d")
         local_time = local_date_time.strftime("%H:%M:%S.%f")
-        site = row["site"]
         data_array = json.loads(row["data"])
 
-        flattened_rows = []
-        for item in data_array:
-            tag_name = item.get("tagName", "")
-            # Include all tags if ALLOWED_TAG_NAMES contains "*", otherwise filter
-            if "*" in ALLOWED_TAG_NAMES or any(
-                # pattern.lower() in tag_name.lower() for pattern in ALLOWED_TAG_NAMES
-                "*"
-            ):
-                flattened_row = {
-                    "date": local_date,
-                    "time": local_time,
-                    "site": site,
-                    "modbusAddress": item.get("modbusAddress"),
-                    "tagName": tag_name,
-                    "unit": item.get("unit"),
-                    "value": item.get("value"),
-                }
-                flattened_rows.append(flattened_row)
-        return flattened_rows
+        return [
+            {
+                "date": local_date,
+                "time": local_time,
+                "site": row["site"],
+                "modbusAddress": item.get("modbusAddress"),
+                "tagName": item.get("tagName", ""),
+                "unit": item.get("unit"),
+                "value": item.get("value"),
+            }
+            for item in data_array if "*" in ALLOWED_TAG_NAMES
+        ]
     except (json.JSONDecodeError, KeyError) as e:
         print(f"Error processing row: {e}")
         return []
 
+# Set starting and ending dates
+start_datetime = "2025-01-14T00:00:00.000000+0800"
+end_datetime = "2025-02-08T00:00:00.000000+0800"
 
-# Flatten all rows
-timezone_str = "Asia/Kuala_Lumpur"
+data = get_query_results(start_datetime, end_datetime, TIMEZONE)
+
+# Flatten the data
+timezone_str = TIMEZONE
 flattened_data = [
-    flattened_row
+    flat_row
     for _, row in data.iterrows()
-    for flattened_row in flatten_data(row, timezone_str)
+    for flat_row in flatten_data(row, timezone_str)
 ]
 
-# Create a new DataFrame with the flattened data
 flattened_df = pd.DataFrame(flattened_data)
 
-# Convert to xlsx
-# Extract dates from start_datetime and end_datetime
+# Generate Excel filename
 start_date = datetime.fromisoformat(start_datetime).strftime("%Y%m%d")
 end_date = datetime.fromisoformat(end_datetime).strftime("%Y%m%d")
 excel_file = f"flattened_data_{start_date}_{end_date}.xlsx"
 
+# Write to Excel, grouped by date
 with pd.ExcelWriter(excel_file, engine="openpyxl") as writer:
-    # Group the data by date
     grouped_data = flattened_df.groupby("date")
-
-    # Create a sheet for each date
-    for date, data in grouped_data:
-        # Clean the date string to make it a valid sheet name
+    for date, df in grouped_data:
         sheet_name = str(date)
-        # Write the data for this date to its own sheet
-        data.to_excel(writer, sheet_name=sheet_name, index=False)
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
 
-# Save to CSV (optional)
-# output_csv = "flattened_data.csv"
-# flattened_df.to_csv(output_csv, index=False)
-
-# Display the flattened data
 print(flattened_df)
