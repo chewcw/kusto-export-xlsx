@@ -65,8 +65,8 @@ def get_query_results(
 
 
 # Read the data into a DataFrame
-start_datetime = "2025-01-26T00:00:00.000000+0800"
-end_datetime = "2025-02-01T00:00:00.000000+0800"
+start_datetime = "2025-02-01T00:00:00.000000+0800"
+end_datetime = "2025-02-08T00:00:00.000000+0800"
 data = get_query_results(start_datetime, end_datetime, "Asia/Kuala_Lumpur")
 # print(data)
 # data = pd.read_csv("export (3).csv")
@@ -96,7 +96,8 @@ def flatten_data(row, timezone_str):
             tag_name = item.get("tagName", "")
             # Include all tags if ALLOWED_TAG_NAMES contains "*", otherwise filter
             if "*" in ALLOWED_TAG_NAMES or any(
-                pattern.lower() in tag_name.lower() for pattern in ALLOWED_TAG_NAMES
+                # pattern.lower() in tag_name.lower() for pattern in ALLOWED_TAG_NAMES
+                "*"
             ):
                 flattened_row = {
                     "date": local_date,
@@ -129,7 +130,18 @@ flattened_df = pd.DataFrame(flattened_data)
 # Extract dates from start_datetime and end_datetime
 start_date = datetime.fromisoformat(start_datetime).strftime("%Y%m%d")
 end_date = datetime.fromisoformat(end_datetime).strftime("%Y%m%d")
-flattened_df.to_excel(f"flattened_data_{start_date}_{end_date}.xlsx", index=False)
+excel_file = f"flattened_data_{start_date}_{end_date}.xlsx"
+
+with pd.ExcelWriter(excel_file, engine="openpyxl") as writer:
+    # Group the data by date
+    grouped_data = flattened_df.groupby("date")
+
+    # Create a sheet for each date
+    for date, data in grouped_data:
+        # Clean the date string to make it a valid sheet name
+        sheet_name = str(date)
+        # Write the data for this date to its own sheet
+        data.to_excel(writer, sheet_name=sheet_name, index=False)
 
 # Save to CSV (optional)
 # output_csv = "flattened_data.csv"
