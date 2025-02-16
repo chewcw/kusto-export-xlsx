@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 from msal import ConfidentialClientApplication
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -152,10 +151,16 @@ def upload_to_onedrive(excel_file: str):
     )
     # Enter username
     username_input.send_keys(USER_EMAIL)
-    username_input.send_keys(Keys.RETURN)
+    # username_input.send_keys(Keys.RETURN)
+    submit_button = WebDriverWait(driver, 10).until(
+        EC.element_to_be_clickable((By.ID, "idSIButton9"))
+    )
+    submit_button.click()
+
+    time.sleep(1)
 
     # Wait for the next page to load and the password input element to be present
-    password_input = WebDriverWait(driver, 10).until(
+    password_input = WebDriverWait(driver, 20).until(
         EC.presence_of_element_located((By.NAME, "passwd"))
     )
     # Enter password
@@ -259,5 +264,8 @@ with pd.ExcelWriter(excel_file, engine="openpyxl") as writer:
 
 # Upload the Excel file to OneDrive
 upload_to_onedrive(excel_file)
+
+# Remove the excel file
+os.remove(excel_file)
 
 print(flattened_df)
