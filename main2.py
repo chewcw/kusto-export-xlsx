@@ -254,7 +254,7 @@ def upload_to_onedrive(excel_file: str):
     )
     if "access_token" in result:
         access_token = result["access_token"]
-        upload_url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{OFFICE365_ONEDRIVE_FOLDER}/{excel_file}:/content"
+        upload_url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{OFFICE365_ONEDRIVE_FOLDER}/{os.path.basename(excel_file)}:/content"
 
         headers = {
             "Authorization": f"Bearer {access_token}",
