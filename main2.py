@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 import pandas as pd
 import pytz
 import requests
+import tempfile
 from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
 from azure.kusto.data.helpers import dataframe_from_result_table
 from dotenv import load_dotenv
@@ -27,7 +28,9 @@ KUSTO_CLIENT_SECRET = os.getenv("KUSTO_CLIENT_SECRET") or ""
 KUSTO_TENANT_ID = os.getenv("KUSTO_TENANT_ID") or ""
 USER_EMAIL = os.getenv("USER_EMAIL") or ""
 USER_PASSWORD = os.getenv("USER_PASSWORD") or ""
-OFFICE365_ONEDRIVE_FOLDER = os.getenv("OFFICE365_ONEDRIVE_FOLDER") or ""
+OFFICE365_ONEDRIVE_FOLDER = os.getenv("OFFICE365_ONEDRIVE_FOLDER") or ''
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or ""
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or ""
 ALLOWED_TAG_NAMES = ["*"]  # For all tags
 TIMEZONE = "Asia/Kuala_Lumpur"
 
@@ -38,13 +41,20 @@ kcsb = KustoConnectionStringBuilder.with_aad_application_key_authentication(
 client = KustoClient(kcsb)
 
 
+def _fix_isoformat_tz(dt_str: str) -> str:
+    """Ensure ISO datetime string has colon in timezone offset for fromisoformat."""
+    if dt_str and len(dt_str) > 5 and (dt_str[-5] in ['+', '-']) and dt_str[-3] != ':':
+        # e.g. 2025-04-21T00:00:00.000000+0800 -> 2025-04-21T00:00:00.000000+08:00
+        return dt_str[:-2] + ':' + dt_str[-2:]
+    return dt_str
+
 def get_query_results(
     start_datetime: str, end_datetime: str = "", timezone: str = "UTC"
 ) -> pd.DataFrame:
     tz = pytz.timezone(timezone)
-    start_dt = datetime.fromisoformat(start_datetime).astimezone(tz)
+    start_dt = datetime.fromisoformat(_fix_isoformat_tz(start_datetime)).astimezone(tz)
     end_dt = (
-        datetime.fromisoformat(end_datetime).astimezone(tz)
+        datetime.fromisoformat(_fix_isoformat_tz(end_datetime)).astimezone(tz)
         if end_datetime
         else datetime.now(tz)
     )
@@ -55,8 +65,8 @@ def get_query_results(
     while current_start < end_dt:
         current_end = min(current_start + timedelta(days=1), end_dt)
         query = f"""
-        ["quill-city-mall-poc"]
-        | where site == "quill-city-mall"
+        ["ioi-city-mall-poc"]
+        | where site == "ioi-city-mall"
         | where dateTimeGenerated >= datetime({current_start.isoformat()}) 
         and dateTimeGenerated <= datetime({current_end.isoformat()})
         | order by dateTimeGenerated asc
@@ -115,6 +125,31 @@ def flatten_data(row, timezone_str):
 
 
 # Upload the Excel file to OneDrive
+def send_telegram_message(message: str):
+    """Send a message to a Telegram channel/chat using the Telegram Bot API."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram bot token or chat ID not configured. Skipping message sending.")
+        return False
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+    
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            print("Message successfully sent to Telegram")
+            return True
+        else:
+            print(f"Failed to send message to Telegram: {response.status_code} - {response.json()}")
+            return False
+    except Exception as e:
+        print(f"Exception when sending message to Telegram: {e}")
+        return False
+
 def upload_to_onedrive(excel_file: str):
     # Get credentials from environment variables to upload to OneDrive
     client_id = os.getenv("OFFICE365_CLIENT_ID")
@@ -141,7 +176,14 @@ def upload_to_onedrive(excel_file: str):
     # print(f"Please go to this URL and authorize the application: {auth_url}")
 
     # Use Selenium to automate the browser
-    driver = webdriver.Chrome()
+    options = webdriver.ChromeOptions()
+    user_data_dir = tempfile.mkdtemp()
+    options.add_argument(f'--user-data-dir={user_data_dir}')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--headless=new')  # Optional: run headless
+
+    driver = webdriver.Chrome(options=options)
 
     driver.get(auth_url)
 
@@ -171,6 +213,17 @@ def upload_to_onedrive(excel_file: str):
         EC.element_to_be_clickable((By.ID, "idSIButton9"))
     )
     submit_button.click()
+
+    # Copy the number with id `idRichContext_DisplaySign` on the screen and paste it here
+    number_element = WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.ID, "idRichContext_DisplaySign"))
+    )
+    
+    auth_number = number_element.text
+    
+    # Send the number to a Telegram channel
+    message = f"Microsoft authentication code: <b>{auth_number}</b>"
+    send_telegram_message(message)
 
     # two-factor authentication
     WebDriverWait(driver, 60).until(EC.url_changes(driver.current_url))
@@ -232,8 +285,8 @@ start_datetime = yesterday_midnight.strftime("%Y-%m-%dT%H:%M:%S.000000+0800")
 end_datetime = today_midnight.strftime("%Y-%m-%dT%H:%M:%S.000000+0800")
 
 # Manually set starting and ending dates
-# start_datetime = "2025-02-09T00:00:00.000000+0800"
-# end_datetime = "2025-02-11T00:00:00.000000+0800"
+# start_datetime = "2025-04-20T00:00:00.000000+0800"
+# end_datetime = "2025-04-21T00:00:00.000000+0800"
 
 # -----------------------------------------------------------------------------
 
@@ -251,9 +304,9 @@ flattened_df = pd.DataFrame(flattened_data)
 
 
 # Generate Excel filename
-start_date = datetime.fromisoformat(start_datetime).strftime("%Y%m%d")
-end_date = datetime.fromisoformat(end_datetime).strftime("%Y%m%d")
-excel_file = f"flattened_data_{start_date}_{end_date}.xlsx"
+start_date = datetime.fromisoformat(_fix_isoformat_tz(start_datetime)).strftime("%Y%m%d")
+end_date = datetime.fromisoformat(_fix_isoformat_tz(end_datetime)).strftime("%Y%m%d")
+excel_file = f"/home/node/flattened_data_{start_date}_{end_date}.xlsx"
 
 # Write to Excel, grouped by date
 with pd.ExcelWriter(excel_file, engine="openpyxl") as writer:
@@ -267,5 +320,6 @@ upload_to_onedrive(excel_file)
 
 # Remove the excel file
 os.remove(excel_file)
+
 
 print(flattened_df)
