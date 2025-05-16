@@ -1,0 +1,9 @@
+requests
+selenium
+msal
+o365
+openpyxl
+pandas
+python-dotenv
+azure-core
+azure-kusto-data
